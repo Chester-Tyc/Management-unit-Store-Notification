@@ -4,7 +4,11 @@ import re
 import time
 import win32com.client as win32
 import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 from datetime import date, datetime
+import pandas as pd
 
 today = datetime.now().strftime("%Y-%m-%d")
 month = datetime.now().strftime("%m")
@@ -192,4 +196,228 @@ def copy_folder():
                 os.rename(old_file_path, new_file_path)
                 print(f"文件已重命名为: {new_file_name}")
 
+
+# 匹配B2B合同签署状态
+def deal_excel(substring, file_path):
+    # 定位到需要处理的文件
+    deal_date = today  # 需要编辑的日期
+    today_folder = rf'D:\移动终端广分互联网\小时达\管理单元及门店管理\{deal_date}'  # 所处理文件路径
+
+    # 获取文件夹下的文件名
+    file_names = os.listdir(today_folder)
+    print(f"文件夹下的文件列表: {file_names}")
+
+    # 整理出所需处理文件的文件路径
+    file_name = [file for file in file_names if substring in file]
+    print(f"匹配到的文件名: {file_name}")
+
+    if not file_name:
+        print(f"未找到包含 '{substring}' 的文件")
+        return
+    elif len(file_name) > 1:
+        file_name.pop(0)
+
+    excel_path = os.path.join(today_folder, file_name[0])
+    print(f"尝试访问的文件路径: {excel_path}")
+
+    # 检查文件是否存在
+    if not os.path.exists(excel_path):
+        print(f"文件不存在: {excel_path}")
+        return
+
+    # 读取 Excel 文件
+    df_B2B = pd.read_excel(file_path, sheet_name='合同推送情况')
+
+    if substring == '最新-管理单元&超管号未通过邀请明细':
+        hand_sheet = '管理单元通过&超管号明细'
+        df_hand = pd.read_excel(excel_path, sheet_name=hand_sheet)
+
+        # 将 df_B2B 的 '管理单元id' 列转换为字符串类型，以便与 df_hand 的 '管理单元id' 匹配
+        df_hand['管理单元id'] = df_hand['管理单元id'].astype(str)
+        df_B2B['管理单元id'] = df_B2B['管理单元id'].astype(str)
+
+        # 使用 merge 进行匹配
+        merged_df = pd.merge(
+            df_hand,
+            df_B2B[['管理单元id', '判定状态']],
+            how='left',
+            left_on='管理单元id',
+            right_on='管理单元id'
+        )
+
+    elif substring == '最新-门店&管理号未通过邀请明细':
+        hand_sheet = '门店通过&管理号明细'
+        df_hand = pd.read_excel(excel_path, sheet_name=hand_sheet)
+
+        # 使用 merge 进行匹配
+        merged_df = pd.merge(
+            df_hand,
+            df_B2B[['管理单元名称', '判定状态']].drop_duplicates(subset='管理单元名称', keep='first'),  # 去重，只保留第一次匹配
+            how='left',
+            left_on='上级管理单元',
+            right_on='管理单元名称'
+        )
+
+    # 小时达入驻情况表有点不一样，所以要单独处理
+    elif substring == '小时达入驻情况':
+        # 读取 Excel 文件的所有 sheet 名称
+        with pd.ExcelFile(excel_path) as excel:
+            sheet_names = excel.sheet_names  # 获取所有 sheet 名称
+
+        # 定义正则表达式模式
+        pattern = re.compile(r'省区管理单元\d')
+        # 筛选出符合条件的 sheet 名称
+        matched_sheet = [name for name in sheet_names if pattern.match(name)][0]
+
+        df_hand = pd.read_excel(excel_path, sheet_name=matched_sheet)
+
+        # 处理地市名称匹配
+        df_hand['匹配地市'] = df_hand['地市'].iloc[0:21] + '市'  # 在目标文件中添加“市”字以便匹配
+
+        # 统计每个地市的“待审批”数量
+        signed_counts = []
+        for city in df_hand['匹配地市'].iloc[0:21]:  # 只对前21行进行操作
+            count = df_B2B[(df_B2B['营业执照-所属地市'] == city) & (df_B2B['判定状态'] == '待审批')].shape[0]
+            signed_counts.append(count)
+
+        # 22行和30行放总计，其余中间行空着
+        total_counts = sum(signed_counts)
+        signed_counts = signed_counts + [total_counts] + [None] * (len(df_hand) - 23) + [total_counts]
+
+        # 将统计结果写入目标文件的 H 列
+        df_hand['已签署'] = pd.Series(signed_counts)
+
+        # 使用 openpyxl 加载原始文件以保留格式
+        book = openpyxl.load_workbook(excel_path)
+        sheet = book[matched_sheet]
+
+        # 在 H 列插入新列
+        sheet.insert_cols(8)  # 在第8列（H列）插入新列
+        sheet.cell(row=1, column=8, value='已签署')  # 设置标题
+
+        # 写入统计结果
+        for i, count in enumerate(signed_counts, start=2):  # 从第2行开始写入
+            sheet.cell(row=i, column=8, value=count)
+
+        # 设置 H 列格式与 G 列相同
+        for row in sheet.iter_rows(min_col=7, max_col=8, min_row=1, max_row=sheet.max_row):
+            g_cell = row[0]  # G 列单元格
+            h_cell = row[1]  # H 列单元格
+            copy_style(g_cell, h_cell)  # 复制样式
+
+        G_width = sheet.column_dimensions['G'].width  # 获取G列宽
+        sheet.column_dimensions['H'].width = G_width    # 将H列宽设为与G列相同
+
+        # 保存文件
+        book.save(excel_path)
+        print(f"处理完成，结果已保存到原始文件: {excel_path}")
+        return
+
+    # 处理匹配结果，将 NaN 替换为 '未推送'
+    merged_df['判定状态'] = merged_df['判定状态'].fillna('未推送')
+
+    # 在 df_hand 的 C/D 列后插入新列
+    df_hand.insert(3, 'B2B签署情况', merged_df['判定状态'])
+
+    # 使用 openpyxl 加载原始文件以保留格式
+    book = openpyxl.load_workbook(excel_path)
+
+    # 获取目标工作表
+    sheet_name = hand_sheet
+    if sheet_name not in book.sheetnames:
+        print(f"未找到工作表: {sheet_name}")
+        return
+
+    sheet = book[sheet_name]
+
+    # 清空内容（保留标题行）
+    if sheet.max_row > 1:
+        sheet.delete_rows(2, sheet.max_row)  # 从第二行开始删除
+
+    # 将新标题和数据写入目标工作表
+    for i, row in enumerate(dataframe_to_rows(df_hand, index=False, header=True)):  # 包括标题
+        for j, value in enumerate(row):
+            sheet.cell(row=i + 1, column=j + 1, value=value)  # 从标题开始写入
+
+    # 设置标题行样式
+    header_row = sheet[1]  # 第一行是标题行
+    for cell in header_row:
+        set_cell_format(sheet, cell.coordinate, fill_color="FFFF00", border=True)   # 底色黄色，全边框
+    set_cell_format(sheet, "D1", fill_color="F4B084", border=True)  # 底色橙色，全边框
+
+    # 保存文件
+    book.save(excel_path)
+    print(f"处理完成，结果已保存到原始文件: {excel_path}")
+
+
+# 改变单元格样式
+def set_cell_format(sheet, cell_position, fill_color=None, font_color='000000', border=False):
+    """
+    设置单元格的格式
+
+    :param sheet: Excel工作表对象
+    :param cell_position: 要修改的单元格位置（例如 'A1'）
+    :param fill_color: 底色（例如 'FFFF00'），如果不设置，传入 None
+    :param font_color: 字体颜色（例如 'FF0000'），如果不设置，传入 None
+    :param border: 是否设置全框线（True/False）
+    """
+    # 获取目标单元格
+    cell = sheet[cell_position]
+
+    # 设置底色
+    if fill_color:
+        cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+    # 设置字体颜色
+    if font_color:
+        cell.font = Font(color=font_color)
+
+    # 设置全框线
+    if border:
+        border_style = Side(border_style="thin", color="000000")  # 细黑色边框
+        cell.border = Border(top=border_style, bottom=border_style, left=border_style, right=border_style)
+
+
+# 复制样式函数
+def copy_style(source_cell, target_cell):
+    """
+    复制源单元格的样式到目标单元格，包括填充、字体、边框、对齐方式和列宽。
+    """
+    # 复制填充样式
+    if source_cell.fill:
+        target_cell.fill = PatternFill(
+            start_color=source_cell.fill.start_color,
+            end_color=source_cell.fill.end_color,
+            fill_type=source_cell.fill.fill_type
+        )
+
+    # 复制字体样式
+    if source_cell.font:
+        target_cell.font = Font(
+            name=source_cell.font.name,
+            size=source_cell.font.size,
+            bold=source_cell.font.bold,
+            italic=source_cell.font.italic,
+            color=source_cell.font.color
+        )
+
+    # 复制边框样式
+    if source_cell.border:
+        target_cell.border = Border(
+            left=Side(border_style=source_cell.border.left.border_style, color=source_cell.border.left.color),
+            right=Side(border_style=source_cell.border.right.border_style, color=source_cell.border.right.color),
+            top=Side(border_style=source_cell.border.top.border_style, color=source_cell.border.top.color),
+            bottom=Side(border_style=source_cell.border.bottom.border_style, color=source_cell.border.bottom.color)
+        )
+
+    # 复制对齐方式
+    if source_cell.alignment:
+        target_cell.alignment = Alignment(
+            horizontal=source_cell.alignment.horizontal,  # 水平对齐（如 'center'）
+            vertical=source_cell.alignment.vertical,  # 垂直对齐（如 'center'）
+            wrap_text=source_cell.alignment.wrap_text,  # 是否自动换行
+            shrink_to_fit=source_cell.alignment.shrink_to_fit,  # 是否缩小字体以适应
+            indent=source_cell.alignment.indent,  # 缩进
+            text_rotation=source_cell.alignment.text_rotation  # 文本旋转角度
+        )
 

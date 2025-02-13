@@ -50,13 +50,19 @@ if __name__ == '__main__':
         Function.excel_conversion()
         print("完成当天小时达入驻表格操作")
 
-        # 将处理好的小时达入驻情况筛选并保存为图片
-        source_path = fr"D:\移动终端广分互联网\小时达\管理单元及门店管理\{date.today()}"
-        sheet_name = {"省区管理单元": "上级入驻情况", "省区门店": "门店入驻情况"}
-        column_letter = "B"  # 要筛选颜色的列
-        color_rgb = (254, 219, 97)  # 橙色的 RGB 值
+        # 匹配B2B合同签署状态
+        B2B_path = r'D:\移动终端广分互联网\小时达\合同推送&签署情况\0123\推送详情草稿.xlsx'  # B2B合同签署文件
+        Function.deal_excel("最新-管理单元&超管号未通过邀请明细", B2B_path)
+        Function.deal_excel("最新-门店&管理号未通过邀请明细", B2B_path)
+        Function.deal_excel("小时达入驻情况", B2B_path)
 
-        save_img(source_path, sheet_name, column_letter, color_rgb)
+        # # 将处理好的小时达入驻情况筛选并保存为图片
+        # source_path = fr"D:\移动终端广分互联网\小时达\管理单元及门店管理\{date.today()}"
+        # sheet_name = {"省区管理单元": "上级入驻情况", "省区门店": "门店入驻情况"}
+        # column_letter = "B"  # 要筛选颜色的列
+        # color_rgb = (254, 219, 97)  # 橙色的 RGB 值
+        #
+        # save_img(source_path, sheet_name, column_letter, color_rgb)
 
         # 后续继续完成将处理好的文件发送到微信群的进程
 
